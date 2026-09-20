@@ -1,11 +1,11 @@
-# MoPilot 公网生产部署
+# MoPilot 单机生产部署
 
-本目录提供 MoPilot 的 Docker Compose 生产部署包。本文只给出操作步骤；仓库维护过程不会连接或修改任何服务器。
+本目录提供 MoPilot 的 Docker Compose 生产部署包，默认使用公网 HTTPS，也支持受信任内网中的纯 HTTP 部署。本文只给出操作步骤；仓库维护过程不会连接或修改任何服务器。
 
 部署拓扑如下：
 
 ```text
-公网 80/443
+公网 80/443 或内网 80
      |
   Nginx + 前端静态文件
      |
@@ -27,7 +27,8 @@
 | `compose.yaml` | PostgreSQL、迁移、API、Web、备份和初始化工具 |
 | `.env.example` | 生产环境变量模板，不包含管理员密码 |
 | `Taskfile.yml` | 常用部署命令，使用 go-task |
-| `nginx/default.conf.template` | HTTPS、SPA、API 代理、安全头和登录限流 |
+| `nginx/default.conf.template` | 公网 HTTPS、SPA、API 代理、安全头和登录限流 |
+| `nginx/http.conf.template` | 内网 HTTP、SPA、API 代理、安全头和登录限流 |
 | `scripts/backup.sh` | PostgreSQL 与附件备份、保留期清理 |
 | `fail2ban/` | 登录失败过滤器与 Docker 防火墙封禁示例 |
 | `logrotate/` | Nginx 日志轮转示例 |
@@ -38,13 +39,15 @@
 
 建议使用仍在安全支持期内的 Linux 发行版，并准备：
 
-- 一个已经解析到服务器公网 IP 的域名。
-- Docker Engine、Docker Compose v2、go-task、Certbot、Fail2Ban。
+- Docker Engine、Docker Compose v2 和 go-task。
 - 至少 2 核 CPU、4 GB 内存和足够保存附件及 30 天备份的磁盘。
 - 使用 SSH 密钥登录，关闭 SSH 密码登录和 root 远程登录。
-- 云安全组及宿主机防火墙只开放 SSH 管理端口、TCP 80 和 TCP 443。
 - 不开放 PostgreSQL 5432 和 API 8080。
 - 系统时间同步正常，时区使用 `Asia/Shanghai`。
+
+公网 HTTPS 模式还需要一个已经解析到服务器公网 IP 的域名，以及 Certbot 和 Fail2Ban。云安全组及宿主机防火墙只开放 SSH 管理端口、TCP 80 和 TCP 443。
+
+内网 HTTP 模式不需要域名、证书或 Certbot，可以直接使用固定内网 IP；防火墙只应允许受信任网段访问 TCP 80。HTTP 不加密账号、密码、Cookie 和附件传输，只能用于隔离且受信任的内网，不得暴露到公网或不受信任的办公访客网络。
 
 附件保存在服务器本地目录。50 人、在线 10 人以内时，本地文件系统性能足够；真正需要关注的是磁盘容量、备份和单机故障，而不是吞吐量。
 
@@ -87,6 +90,28 @@ BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_TEAM=杭州
 ```
 
+### 公网 HTTPS 模式（默认）
+
+保留以下配置：
+
+```dotenv
+MOPILOT_DOMAIN=mopilot.example.com
+MOPILOT_NGINX_TEMPLATE=./nginx/default.conf.template
+SESSION_COOKIE_SECURE=true
+```
+
+### 内网 HTTP 模式
+
+把域名替换为服务器的固定内网 IP 或内网 DNS 名称，同时选择 HTTP 模板并关闭 Cookie 的 `Secure` 属性：
+
+```dotenv
+MOPILOT_DOMAIN=192.168.1.100
+MOPILOT_NGINX_TEMPLATE=./nginx/http.conf.template
+SESSION_COOKIE_SECURE=false
+```
+
+三个值必须成组修改。HTTP 模式不会引用 TLS 证书；Compose 中保留的 443 端口映射没有对应的 Nginx 监听，内网防火墙无需开放 443。需要加密内网传输时，应使用内网 CA 签发的证书并采用 HTTPS 模式，而不是长期使用明文 HTTP。
+
 每次发布使用新的 `MOPILOT_IMAGE_TAG`，不要反复覆盖同一个标签。`.env` 已被 Git 忽略，不得提交，也不要把 `docker compose config` 的完整输出粘贴到工单或聊天中，因为展开结果含数据库密码。
 
 创建持久化目录：
@@ -101,7 +126,7 @@ sudo chown -R 10001:10001 /srv/mopilot/attachments
 
 API 镜像以 UID/GID `10001:10001` 运行，因此附件目录必须允许该用户写入。PostgreSQL 数据使用 Docker 命名卷，附件、备份和日志使用明确的宿主机目录。
 
-## 4. 首次申请 HTTPS 证书
+## 4. 首次申请 HTTPS 证书（仅 HTTPS 模式）
 
 确认 DNS 已生效，并确保 80 端口尚未被其他程序占用：
 
@@ -121,6 +146,8 @@ sudo certbot certonly --standalone \
 ```
 
 证书存在前不要启动 Web 容器，否则 Nginx 会因找不到证书而退出。
+
+内网 HTTP 模式跳过本节，直接执行首次部署。
 
 Web 启动后，将续期认证方式改为已挂载的 ACME webroot：
 
@@ -180,7 +207,7 @@ task up
 task ps
 ```
 
-访问 `https://你的域名` 登录。首次登录后立即在“用户管理”中创建第二个独立管理员作为应急账号，并安全保管其密码。不要用首个管理员账号做锁定或限流测试。
+HTTPS 模式访问 `https://你的域名`，HTTP 模式访问 `http://服务器内网地址`。首次登录后立即在“用户管理”中创建第二个独立管理员作为应急账号，并安全保管其密码。不要用首个管理员账号做锁定或限流测试。
 
 ## 6. 上线验证
 
@@ -192,16 +219,22 @@ docker compose --env-file .env -f compose.yaml logs --tail=100 web api migrate b
 curl -fsS https://你的域名/
 ```
 
+内网 HTTP 模式将最后一条命令替换为：
+
+```bash
+curl -fsS http://服务器内网地址/
+```
+
 确认宿主机只监听预期端口：
 
 ```bash
 sudo ss -lntp
 ```
 
-预期公网服务只有 80 和 443；列表中不应出现 Docker 发布的 5432 或 8080。再检查：
+HTTPS 模式预期公网服务只有 80 和 443。HTTP 模式只有 80 提供应用服务，Compose 仍会发布未被 Nginx 监听的 443；不要在内网防火墙中放行它。两种模式的列表中都不应出现 Docker 发布的 5432 或 8080。再检查：
 
-- HTTP 自动跳转 HTTPS。
-- 证书域名和有效期正确。
+- HTTPS 模式下，HTTP 自动跳转 HTTPS，且证书域名和有效期正确。
+- HTTP 模式下，直接访问内网地址不会跳转 HTTPS，登录响应的 Session Cookie 不带 `Secure`。
 - 登录、退出、附件上传和附件下载正常。
 - 刷新需求或任务详情页不会返回 Nginx 404。
 - 浏览器控制台没有 CSP 阻止 MoPilot 自身资源。

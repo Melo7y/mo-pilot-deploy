@@ -69,7 +69,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-mopilot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-mopilot}?sslmode=disable
       ATTACHMENT_DIR: /data/attachments
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-mopilot_session}
-      SESSION_COOKIE_SECURE: "true"
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       SESSION_TTL: ${SESSION_TTL:-8h}
       LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
       LOGIN_LOCK_DURATION: ${LOGIN_LOCK_DURATION:-5m}
@@ -113,7 +113,7 @@ services:
       - "${MOPILOT_HTTP_PORT:-80}:80"
       - "${MOPILOT_HTTPS_PORT:-443}:443"
     volumes:
-      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${MOPILOT_NGINX_TEMPLATE:-./nginx/default.conf.template}:/etc/nginx/templates/default.conf.template:ro
       - ${LETSENCRYPT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
       - ${MOPILOT_DATA_DIR:-/srv/mopilot}/acme:/var/www/certbot:ro
       - ${MOPILOT_DATA_DIR:-/srv/mopilot}/logs/nginx:/var/log/nginx
