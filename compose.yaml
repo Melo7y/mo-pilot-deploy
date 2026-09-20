@@ -1,0 +1,173 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mopilot}
+      POSTGRES_USER: ${POSTGRES_USER:-mopilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    image: mopilot-api:${MOPILOT_IMAGE_TAG:-local}
+    build:
+      context: ${BACKEND_CONTEXT:-../backend}
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mopilot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-mopilot}?sslmode=disable
+      TZ: ${TZ:-Asia/Shanghai}
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  bootstrap-admin:
+    image: mopilot-api:${MOPILOT_IMAGE_TAG:-local}
+    build:
+      context: ${BACKEND_CONTEXT:-../backend}
+    entrypoint: ["/app/bootstrap-admin"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mopilot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-mopilot}?sslmode=disable
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-系统管理员}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_TEAM: ${BOOTSTRAP_ADMIN_TEAM:-杭州}
+      TZ: ${TZ:-Asia/Shanghai}
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["tools"]
+    restart: "no"
+
+  api:
+    image: mopilot-api:${MOPILOT_IMAGE_TAG:-local}
+    build:
+      context: ${BACKEND_CONTEXT:-../backend}
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-mopilot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:-mopilot}?sslmode=disable
+      ATTACHMENT_DIR: /data/attachments
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-mopilot_session}
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_TTL: ${SESSION_TTL:-8h}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+      LOGIN_LOCK_DURATION: ${LOGIN_LOCK_DURATION:-5m}
+      GIN_MODE: release
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ${MOPILOT_DATA_DIR:-/srv/mopilot}/attachments:/data/attachments
+    expose:
+      - "8080"
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  web:
+    image: mopilot-web:${MOPILOT_IMAGE_TAG:-local}
+    build:
+      context: ${FRONTEND_CONTEXT:-../frontend}
+      args:
+        COMMIT_HASH: ${MOPILOT_IMAGE_TAG:-production}
+    environment:
+      MOPILOT_DOMAIN: ${MOPILOT_DOMAIN:?MOPILOT_DOMAIN is required}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${MOPILOT_HTTP_PORT:-80}:80"
+      - "${MOPILOT_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${LETSENCRYPT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
+      - ${MOPILOT_DATA_DIR:-/srv/mopilot}/acme:/var/www/certbot:ro
+      - ${MOPILOT_DATA_DIR:-/srv/mopilot}/logs/nginx:/var/log/nginx
+    networks:
+      - edge
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /etc/nginx/conf.d:size=1m
+      - /var/cache/nginx:size=64m
+      - /var/run:size=1m
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  backup:
+    image: postgres:17-alpine
+    entrypoint: ["/bin/sh", "/scripts/backup.sh"]
+    command: ["loop"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-mopilot}
+      PGUSER: ${POSTGRES_USER:-mopilot}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      - ${MOPILOT_DATA_DIR:-/srv/mopilot}/attachments:/attachments:ro
+      - ${MOPILOT_DATA_DIR:-/srv/mopilot}/backups:/backups
+    networks:
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  edge:
+  backend:
+    internal: true

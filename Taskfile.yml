@@ -1,0 +1,75 @@
+version: "3"
+
+vars:
+  COMPOSE: docker compose --env-file .env -f compose.yaml
+
+tasks:
+  default:
+    desc: 校验生产部署配置
+    cmds:
+      - task: config
+
+  config:
+    desc: 展开并校验 Docker Compose 配置
+    preconditions:
+      - sh: test -f .env
+        msg: 请先从 .env.example 创建 .env
+    cmds:
+      - "{{.COMPOSE}} config --quiet"
+
+  build:
+    desc: 构建前后端生产镜像
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} build"
+
+  db:up:
+    desc: 启动 PostgreSQL
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} up -d db"
+
+  migrate:
+    desc: 执行全部待处理数据库迁移
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} run --rm migrate up"
+
+  bootstrap-admin:
+    desc: 创建首个管理员，密码通过 BOOTSTRAP_ADMIN_PASSWORD 环境变量传入
+    deps: [config]
+    preconditions:
+      - sh: test -n "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+        msg: 请先设置 BOOTSTRAP_ADMIN_PASSWORD，且不要把它写入 .env
+    cmds:
+      - "{{.COMPOSE}} run --rm -e BOOTSTRAP_ADMIN_PASSWORD bootstrap-admin"
+
+  up:
+    desc: 启动或更新全部生产服务
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} up -d --remove-orphans"
+
+  down:
+    desc: 停止服务但保留数据库、附件和备份
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} down"
+
+  backup:
+    desc: 立即生成一次 PostgreSQL 与附件备份
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} run --rm backup once"
+
+  ps:
+    desc: 查看服务状态
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} ps"
+
+  logs:
+    desc: 持续查看 Web、API、数据库和备份日志
+    deps: [config]
+    cmds:
+      - "{{.COMPOSE}} logs -f web api db backup"
