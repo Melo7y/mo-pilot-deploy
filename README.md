@@ -55,8 +55,8 @@
 
 ```text
 /opt/mopilot/
-├── backend/
-├── frontend/
+├── backend/       # 仅在线构建机需要
+├── frontend/      # 仅在线构建机需要
 └── deploy/
 
 /srv/mopilot/
@@ -66,7 +66,7 @@
 └── logs/nginx/
 ```
 
-将三个仓库分别检出到上述目录，部署仓库目录命名为 `deploy`。如果使用其他位置，在 `.env` 中调整 `BACKEND_CONTEXT`、`FRONTEND_CONTEXT` 和 `MOPILOT_DATA_DIR`。
+在线构建机将三个仓库分别检出到上述目录，部署仓库目录命名为 `deploy`。离线镜像部署的公网服务器只需要 `deploy/`。如果使用其他位置，在 `.env` 中调整 `BACKEND_CONTEXT`、`FRONTEND_CONTEXT` 和 `MOPILOT_DATA_DIR`；离线服务器不会读取前两个构建上下文。
 
 ## 3. 准备环境变量和目录
 
@@ -126,7 +126,145 @@ sudo chown -R 10001:10001 /srv/mopilot/attachments
 
 API 镜像以 UID/GID `10001:10001` 运行，因此附件目录必须允许该用户写入。PostgreSQL 数据使用 Docker 命名卷，附件、备份和日志使用明确的宿主机目录。
 
-## 4. 首次申请 HTTPS 证书（仅 HTTPS 模式）
+## 4. 离线镜像交付（公网服务器不构建）
+
+正式环境可以只接收已经构建好的镜像和部署配置，不保存 `backend/`、`frontend/` 源码，也不安装 Go 或 Node.js。发布包需要包含：
+
+- `mopilot-api:<版本>`：同时提供 API、数据库迁移和首个管理员初始化命令。
+- `mopilot-web:<版本>`：包含已经编译完成的前端静态文件和 Nginx。
+- `postgres:17-alpine`：同时供数据库和备份服务使用。
+- 本部署目录中除 `.git/`、`.env` 之外的文件。
+
+### 在构建机制作发布包
+
+先在公网服务器执行 `uname -m` 确认架构。`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。在同时包含 `backend/`、`frontend/` 和 `deploy/` 的构建机上进入部署目录，设置本次唯一的镜像标签和目标平台：
+
+```bash
+cd /opt/mopilot/deploy
+TAG=20260920-1
+PLATFORM=linux/amd64
+```
+
+构建与服务器平台一致的镜像：
+
+```bash
+docker buildx build \
+  --platform "$PLATFORM" \
+  --load \
+  -t "mopilot-api:$TAG" \
+  ../backend
+
+docker buildx build \
+  --platform "$PLATFORM" \
+  --build-arg "COMMIT_HASH=$TAG" \
+  --load \
+  -t "mopilot-web:$TAG" \
+  ../frontend
+
+docker pull --platform "$PLATFORM" postgres:17-alpine
+```
+
+构建机需要本机代理时，可以增加 `--network=host`，并通过 `--build-arg HTTP_PROXY=...`、`--build-arg HTTPS_PROXY=...` 传入代理；不要把构建机代理地址写入 Dockerfile。
+
+导出三个运行时镜像：
+
+```bash
+docker save \
+  "mopilot-api:$TAG" \
+  "mopilot-web:$TAG" \
+  postgres:17-alpine \
+  | gzip -1 > "../mopilot-images-$TAG.tar.gz"
+```
+
+部署目录只打包运行所需文件，不包含生产 `.env`：
+
+```bash
+tar \
+  --exclude='.git' \
+  --exclude='.env' \
+  -czf "../mopilot-deploy-$TAG.tar.gz" \
+  .
+
+cd ..
+sha256sum \
+  "mopilot-images-$TAG.tar.gz" \
+  "mopilot-deploy-$TAG.tar.gz" \
+  > "SHA256SUMS-$TAG"
+```
+
+向公网服务器传输以下三个文件：
+
+```text
+mopilot-images-<版本>.tar.gz
+mopilot-deploy-<版本>.tar.gz
+SHA256SUMS-<版本>
+```
+
+### 在公网服务器导入并部署
+
+如果要把 Docker 镜像、构建缓存和 PostgreSQL 命名卷放到数据盘，必须先配置 Docker `data-root`，再导入镜像。例如使用 `/mnt/data/docker` 后，应先确认：
+
+```bash
+docker info --format '{{.DockerRootDir}}'
+```
+
+该命令应输出 `/mnt/data/docker`。随后进入收到发布包的目录，校验文件并导入：
+
+```bash
+TAG=20260920-1
+sha256sum -c "SHA256SUMS-$TAG"
+
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/mopilot/deploy
+tar -xzf "mopilot-deploy-$TAG.tar.gz" -C /opt/mopilot/deploy
+gzip -dc "mopilot-images-$TAG.tar.gz" | docker load
+```
+
+确认镜像标签和架构：
+
+```bash
+docker image inspect --format '{{.RepoTags}} {{.Os}}/{{.Architecture}}' \
+  "mopilot-api:$TAG" \
+  "mopilot-web:$TAG" \
+  postgres:17-alpine
+```
+
+进入 `/opt/mopilot/deploy`，按第 3 节创建 `.env` 和持久化目录，并确保 `.env` 中的 `MOPILOT_IMAGE_TAG` 与导入标签完全相同。公网 HTTPS 部署还要先完成第 5 节的证书申请。
+
+之后使用显式禁止拉取和构建的命令初始化：
+
+```bash
+cd /opt/mopilot/deploy
+docker compose --env-file .env -f compose.yaml config --quiet
+docker compose --env-file .env -f compose.yaml \
+  up -d --pull never db
+docker compose --env-file .env -f compose.yaml \
+  run --rm --pull never migrate up
+```
+
+创建首个管理员。以下命令显式使用 Bash，避免 zsh 的 `read -p` 语义不同：
+
+```bash
+bash -c '
+read -rsp "首个管理员密码: " BOOTSTRAP_ADMIN_PASSWORD
+printf "\n"
+export BOOTSTRAP_ADMIN_PASSWORD
+docker compose --env-file .env -f compose.yaml \
+  run --rm --pull never -e BOOTSTRAP_ADMIN_PASSWORD bootstrap-admin
+unset BOOTSTRAP_ADMIN_PASSWORD
+'
+```
+
+最后只使用已导入镜像启动服务：
+
+```bash
+docker compose --env-file .env -f compose.yaml \
+  up -d --no-build --pull never --remove-orphans
+docker compose --env-file .env -f compose.yaml ps
+```
+
+`--no-build --pull never` 是公网服务器的保护措施：镜像缺失或标签不一致时应直接失败，而不是临时联网拉取或使用源码构建。部署完成后按第 7 节执行上线验证。
+
+## 5. 首次申请 HTTPS 证书（仅 HTTPS 模式）
 
 确认 DNS 已生效，并确保 80 端口尚未被其他程序占用：
 
@@ -171,9 +309,11 @@ docker compose --env-file .env -f compose.yaml exec -T web nginx -s reload
 
 该脚本由 root 管理并设置为可执行。先运行 `certbot renew --dry-run`，确认 webroot 校验和 deploy hook 都成功。
 
-## 5. 首次部署
+## 6. 首次部署
 
-先校验配置并构建镜像：
+本节适用于服务器在线构建。采用第 4 节离线镜像交付时，不执行 `task build`，也不需要服务器上存在 `backend/`、`frontend/`，应直接使用第 4 节带 `--no-build --pull never` 的初始化和启动命令。
+
+在线构建先校验配置并构建镜像：
 
 ```bash
 cd /opt/mopilot/deploy
@@ -183,7 +323,7 @@ task db:up
 task migrate
 ```
 
-创建首个管理员。密码至少 8 个字符、最多 72 字节，建议使用密码管理器生成 16 位以上随机密码。密码只通过当前 shell 环境传入，不写入 `.env`：
+创建首个管理员。密码至少 8 个字符、最多 72 字节，建议使用密码管理器生成 16 位以上随机密码。密码只通过当前 shell 环境传入，不写入 `.env`。以下命令使用 Bash；zsh 用户可先执行 `bash` 进入 Bash：
 
 ```bash
 read -rsp '首个管理员密码: ' BOOTSTRAP_ADMIN_PASSWORD
@@ -209,7 +349,7 @@ task ps
 
 HTTPS 模式访问 `https://你的域名`，HTTP 模式访问 `http://服务器内网地址`。首次登录后立即在“用户管理”中创建第二个独立管理员作为应急账号，并安全保管其密码。不要用首个管理员账号做锁定或限流测试。
 
-## 6. 上线验证
+## 7. 上线验证
 
 检查容器和 API 健康状态：
 
@@ -242,7 +382,7 @@ HTTPS 模式预期公网服务只有 80 和 443。HTTP 模式只有 80 提供应
 
 HSTS 默认开启一年，但没有启用 `includeSubDomains` 和 preload。确认 HTTPS 长期稳定后再评估是否扩大范围。
 
-## 7. 登录防爆破
+## 8. 登录防爆破
 
 公网登录采用三层保护：
 
@@ -284,7 +424,7 @@ done
 
 公司多人可能共用一个公网出口 IP。发生误封时先核对日志并临时解封明确的办公出口 IP，再把持续速率从 `10r/m` 调整为 `20r/m` 或把 burst 调整为 20。不要直接关闭账号锁定、Nginx 限流或 Fail2Ban。
 
-## 8. 备份
+## 9. 备份
 
 `backup` 服务启动后立即备份一次，之后默认每 24 小时备份一次，保留 30 天。每个备份目录包含：
 
@@ -314,7 +454,7 @@ sha256sum -c SHA256SUMS
 
 备份顺序是先 PostgreSQL、后附件。当前附件只追加，不提供删除操作，因此这能避免数据库引用尚未进入附件归档的文件。以后若增加附件删除或替换，应改为存储快照或短暂停写备份。
 
-## 9. 恢复
+## 10. 恢复
 
 恢复会覆盖当前数据库和附件，必须进入维护窗口，并先确认备份校验通过。以下命令中的备份目录必须替换为已核对的明确路径。
 
@@ -365,7 +505,7 @@ task ps
 
 登录并抽查需求、任务、附件和时间线后，才可以清理 `attachments.before-restore`。恢复演练必须使用隔离的 Compose project 和目录，不能在生产环境直接试验。
 
-## 10. 升级与回滚
+## 11. 升级与回滚
 
 升级前：
 
@@ -384,6 +524,21 @@ task up
 task ps
 ```
 
+离线镜像部署不在公网服务器执行 `task build`。应在构建机按第 4 节生成并传输新版本镜像包，在服务器校验后执行：
+
+```bash
+TAG=新版本标签
+gzip -dc "mopilot-images-$TAG.tar.gz" | docker load
+# 将 .env 中的 MOPILOT_IMAGE_TAG 修改为同一个新版本标签
+docker compose --env-file .env -f compose.yaml \
+  run --rm --pull never backup once
+docker compose --env-file .env -f compose.yaml \
+  run --rm --pull never migrate up
+docker compose --env-file .env -f compose.yaml \
+  up -d --no-build --pull never --remove-orphans
+docker compose --env-file .env -f compose.yaml ps
+```
+
 升级后完成登录、列表、详情、附件上传下载和关键流程冒烟测试，并观察 API/Nginx 日志。
 
 应用回滚时，把 `.env` 的 `MOPILOT_IMAGE_TAG` 改回仍保留在本机的旧标签，再执行：
@@ -394,7 +549,7 @@ docker compose --env-file .env -f compose.yaml up -d --no-build api web
 
 只有确认数据库迁移向后兼容时才能只回滚应用。涉及不兼容 schema 或数据变化时，应进入维护窗口并按上一节恢复升级前备份，不要盲目执行 `migrate down`。
 
-## 11. 日常运维
+## 12. 日常运维
 
 ```bash
 task ps
@@ -418,7 +573,7 @@ sudo certbot certificates
 
 应用日志由 `docker compose logs` 查看；生产服务器还应配置 Docker 日志大小和轮转策略，避免 stdout 日志占满系统盘。
 
-## 12. 公网安全边界
+## 13. 公网安全边界
 
 - 保持操作系统、Docker、PostgreSQL、Nginx 和基础镜像更新，并先在隔离环境验证升级。
 - `.env`、证书私钥、数据库备份和附件备份只允许运维账号读取。
