@@ -2,6 +2,8 @@
 
 本目录提供 MoPilot 的 Docker Compose 生产部署包，默认使用公网 HTTPS，也支持受信任内网中的纯 HTTP 部署。本文只给出操作步骤；仓库维护过程不会连接或修改任何服务器。
 
+三个仓库采用 `main` + 短期功能分支 + 统一版本标签，详见[分支与发布约定](CONTRIBUTING.md)。
+
 部署拓扑如下：
 
 ```text
@@ -156,7 +158,7 @@ docker buildx build \
   --build-arg "HTTPS_PROXY=http://host.docker.internal:7890" \
   --build-arg "NO_PROXY=localhost,127.0.0.1" \
   -t "mopilot-api:$TAG" \
-  ../backend
+  ../mo-pilot-backend
 
 docker buildx build \
   --platform "$PLATFORM" \
@@ -167,7 +169,7 @@ docker buildx build \
   --build-arg "NO_PROXY=localhost,127.0.0.1" \
   --load \
   -t "mopilot-web:$TAG" \
-  ../frontend
+  ../mo-pilot-frontend
 
 docker pull --platform "$PLATFORM" postgres:17-alpine
 ```
