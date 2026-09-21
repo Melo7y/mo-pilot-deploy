@@ -150,13 +150,21 @@ PLATFORM=linux/amd64
 ```bash
 docker buildx build \
   --platform "$PLATFORM" \
+  --add-host=host.docker.internal:host-gateway \
   --load \
+  --build-arg "HTTP_PROXY=http://host.docker.internal:7890" \
+  --build-arg "HTTPS_PROXY=http://host.docker.internal:7890" \
+  --build-arg "NO_PROXY=localhost,127.0.0.1" \
   -t "mopilot-api:$TAG" \
   ../backend
 
 docker buildx build \
   --platform "$PLATFORM" \
+  --add-host=host.docker.internal:host-gateway \
   --build-arg "COMMIT_HASH=$TAG" \
+  --build-arg "HTTP_PROXY=http://host.docker.internal:7890" \
+  --build-arg "HTTPS_PROXY=http://host.docker.internal:7890" \
+  --build-arg "NO_PROXY=localhost,127.0.0.1" \
   --load \
   -t "mopilot-web:$TAG" \
   ../frontend
