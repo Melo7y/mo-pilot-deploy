@@ -15,6 +15,9 @@ server {
     server_name ${MOPILOT_DOMAIN};
     server_tokens off;
 
+    # Preserve the browser's external port when adding a directory trailing slash.
+    absolute_redirect off;
+
     root /usr/share/nginx/html;
     index index.html;
     client_max_body_size 2050m;

@@ -114,6 +114,18 @@ SESSION_COOKIE_SECURE=false
 
 三个值必须成组修改。HTTP 模式不会引用 TLS 证书；Compose 中保留的 443 端口映射没有对应的 Nginx 监听，内网防火墙无需开放 443。需要加密内网传输时，应使用内网 CA 签发的证书并采用 HTTPS 模式，而不是长期使用明文 HTTP。
 
+如果通过非默认端口访问，例如 `http://192.168.1.100:9000`，另设 `MOPILOT_HTTP_PORT=9000`，`MOPILOT_DOMAIN` 仍只填 IP 或主机名。HTTP 模板使用 `absolute_redirect off;`，让目录补斜杠时返回相对 `Location`，保留浏览器访问时的协议、主机和端口。否则 Nginx 按容器内的 80 端口生成绝对重定向，可能跳到不带 `:9000` 的地址。
+
+已有部署更新 `nginx/http.conf.template` 后，在部署目录执行以下命令，重新生成容器内配置并验证（沿用当前明确的版本镜像，无需重新构建）：
+
+```bash
+docker compose up -d --no-deps --force-recreate --pull never web
+docker compose exec -T web nginx -t
+curl -I http://192.168.1.100:9000/requirements
+```
+
+替换示例 IP 和端口。预期响应为 `301` 且 `Location: /requirements/`，继续访问带端口的 `/requirements/` 应返回 `200`。模板在容器启动时生成配置，仅执行 `nginx -s reload` 不会重新处理模板。若浏览器仍沿用旧的 301，清除该站点缓存或使用无痕窗口复测。
+
 每次发布使用新的 `MOPILOT_IMAGE_TAG`，不要反复覆盖同一个标签。`.env` 已被 Git 忽略，不得提交，也不要把 `docker compose config` 的完整输出粘贴到工单或聊天中，因为展开结果含数据库密码。
 
 创建持久化目录：
