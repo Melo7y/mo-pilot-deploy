@@ -27,6 +27,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `compose.yaml` | PostgreSQL、迁移、API、Web、备份和初始化工具 |
+| `compose.dingtalk.yaml` | 可选钉钉变量注入及仅API使用的出站网络 |
 | `.env.example` | 生产环境变量模板，不包含管理员密码 |
 | `Taskfile.yml` | 常用部署命令，使用 go-task |
 | `nginx/default.conf.template` | 公网 HTTPS、SPA、API 代理、安全头和登录限流 |
@@ -594,6 +595,20 @@ sudo certbot certificates
 - 管理员账号触发锁定。
 
 应用日志由 `docker compose logs` 查看；生产服务器还应配置 Docker 日志大小和轮转策略，避免 stdout 日志占满系统盘。
+
+### 钉钉绑定与外部网络（可选）
+
+默认编排的API只接内部网络，钉钉集成保持禁用。需要启用时，在服务端`.env`填入目标企业`DINGTALK_CORP_ID`、`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_REDIRECT_URL`，并显式叠加覆盖文件：
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml config --quiet
+```
+
+`compose.dingtalk.yaml`启用集成并仅给API增加出站网络；数据库仍只连接`internal: true`的backend网络，数据库和API仍不发布宿主机端口。API需通过HTTPS访问`api.dingtalk.com`、`oapi.dingtalk.com`；企业防火墙限制出站时需允许这两个官方域名。API缺凭证或非法回跳地址会拒绝启动。
+
+启用后，所有影响API创建、更新或升级的Compose命令都应使用上述两个`-f`，避免遗漏覆盖文件。迁移至少到`00011`；使用发布阶段验证的明确版本镜像。个人设置页面由D04接入，目标企业真实授权与通知联调由R04/R05完成后再交付。
+
+回跳固定在HTTPS公开入口`/api/v1/integrations/dingtalk/callback`，在钉钉后台登记同一地址。两个Nginx模板为回跳专门关闭access/error日志，并设置`no-referrer`和`no-store`；Go API记录不含query的结果日志。HTTPS模板的80端口收到回跳时，丢弃授权参数并转到固定失败结果，不把授权数据继续放进Location。若另接CDN/WAF/负载均衡，也须为这一条路径排除请求查询日志及第三方响应原文。普通业务和登录日志保持原策略。
 
 ## 13. 公网安全边界
 

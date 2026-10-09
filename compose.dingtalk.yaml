@@ -1,0 +1,15 @@
+# Explicit opt-in: keep the database internal, give only the API outbound access.
+# Always pass both compose files for API lifecycle commands when enabled.
+services:
+  api:
+    environment:
+      DINGTALK_ENABLED: "true"
+      DINGTALK_CORP_ID: ${DINGTALK_CORP_ID:?DINGTALK_CORP_ID is required}
+      DINGTALK_CLIENT_ID: ${DINGTALK_CLIENT_ID:?DINGTALK_CLIENT_ID is required}
+      DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET:?DINGTALK_CLIENT_SECRET is required}
+      DINGTALK_REDIRECT_URL: ${DINGTALK_REDIRECT_URL:?DINGTALK_REDIRECT_URL is required}
+    networks:
+      - backend
+      - dingtalk_egress
+networks:
+  dingtalk_egress:
