@@ -598,13 +598,13 @@ sudo certbot certificates
 
 ### 钉钉绑定与外部网络（可选）
 
-默认编排的API只接内部网络，钉钉集成保持禁用。需要启用时，在服务端`.env`填入目标企业`DINGTALK_CORP_ID`、`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_REDIRECT_URL`、正整数`DINGTALK_AGENT_ID`及平台origin `MOPILOT_PUBLIC_URL`（例如`https://mopilot.example.com`，不含路径/查询/片段），并显式叠加覆盖文件：
+默认编排的API只接内部网络，钉钉集成保持禁用。需要启用时，在服务端`.env`填入目标企业`DINGTALK_CORP_ID`、`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_REDIRECT_URL`、`DINGTALK_ROBOT_CODE`及平台origin `MOPILOT_PUBLIC_URL`（例如`https://mopilot.example.com`，不含路径/查询/片段），并显式叠加覆盖文件：
 
 ```bash
 docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml config --quiet
 ```
 
-`compose.dingtalk.yaml`启用集成并仅给API增加出站网络；数据库仍只连接`internal: true`的backend网络，数据库和API仍不发布宿主机端口。API需通过HTTPS访问`api.dingtalk.com`、`oapi.dingtalk.com`；企业防火墙限制出站时需允许这两个官方域名。API缺凭证、AgentID、公开平台地址或非法回跳地址会拒绝启动。
+`compose.dingtalk.yaml`启用集成并仅给API增加出站网络；数据库仍只连接`internal: true`的backend网络，数据库和API仍不发布宿主机端口。API需通过HTTPS访问`api.dingtalk.com`、`oapi.dingtalk.com`；企业防火墙限制出站时需允许这两个官方域名。API缺凭证、RobotCode、公开平台地址或非法回跳地址会拒绝启动。
 
 启用后，所有影响API创建、更新或升级的Compose命令都应使用上述两个`-f`，避免遗漏覆盖文件。迁移至少到`00011`；使用发布阶段验证的明确版本镜像。个人设置页面由D04接入，目标企业真实授权与通知联调由R04/R05完成后再交付。
 
@@ -612,7 +612,9 @@ docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml config -
 
 排查用`docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml logs --since 1h api`，按event_id/task_id/recipient_id关联`notification failed`、`notification skipped`或`notification abandoned`。`attempts=4`表示四次均未受理，reason只包含受控错误类别；`notification accepted`仅表示钉钉接口受理，不能当作员工已收到。`dispatch_failed`表示内存缓冲满或发送器停止。覆盖文件设置Docker json-file轮转10MiB×3，不输出完整第三方响应、消息或凭证；删除容器前按需要归档诊断日志，日志留存不承担恢复重试的职责。
 
-官方接口和长度规则见[发送工作通知](https://open.dingtalk.com/document/orgapp/asynchronous-sending-of-enterprise-session-messages)及[消息通知类型](https://open.dingtalk.com/document/orgapp/message-types-and-data-format)。相同内容及每日发送限额可能出现接口成功但客户端未收到；首版按已确认范围不查询结果，实际收取仍需R04/R05在目标企业验证。
+目标企业内部应用须在应用能力中开启机器人，开通企业内机器人发消息权限`qyapi_robot_sendmsg`，保存机器人并发布应用；复制该应用的RobotCode到服务端配置。原有通讯录身份权限、员工可用范围和绑定回跳保留。只发送通知无需接收回调服务或Stream连接。消息固定发送到机器人个人单聊，不回退到工作通知，也不使用群Webhook；旧DINGTALK_AGENT_ID不再使用。
+
+官方契约见[机器人单聊发送](https://open.dingtalk.com/document/development/chatbots-send-one-on-one-chat-messages-in-batches)、[机器人消息模板](https://open.dingtalk.com/document/development/robot-message-type)及[配置企业机器人](https://open.dingtalk.com/document/dingstart/configure-the-robot-application)。每次发送一位已绑定员工，使用sampleMarkdown与JSON字符串msgParam；非空processQueryKey且无invalidStaffIdList/flowControlledStaffIdList才认定接口受理。无效员工或限流仍按最多三次后台重试处理。消息参数采用2048字节摘要预算，保留任务链接；链接继续校验平台登录及权限，手机访问需可达的HTTPS地址。首版不查询最终结果，真实单聊收取仍需R04/R05验证。机器人接口仍受平台调用量和限流约束。
 
 回跳固定在HTTPS公开入口`/api/v1/integrations/dingtalk/callback`，在钉钉后台登记同一地址。两个Nginx模板为回跳专门关闭access/error日志，并设置`no-referrer`和`no-store`；Go API记录不含query的结果日志。HTTPS模板的80端口收到回跳时，丢弃授权参数并转到固定失败结果，不把授权数据继续放进Location。若另接CDN/WAF/负载均衡，也须为这一条路径排除请求查询日志及第三方响应原文。普通业务和登录日志保持原策略。
 
