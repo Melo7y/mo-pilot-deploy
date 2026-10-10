@@ -598,15 +598,21 @@ sudo certbot certificates
 
 ### 钉钉绑定与外部网络（可选）
 
-默认编排的API只接内部网络，钉钉集成保持禁用。需要启用时，在服务端`.env`填入目标企业`DINGTALK_CORP_ID`、`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_REDIRECT_URL`，并显式叠加覆盖文件：
+默认编排的API只接内部网络，钉钉集成保持禁用。需要启用时，在服务端`.env`填入目标企业`DINGTALK_CORP_ID`、`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`、`DINGTALK_REDIRECT_URL`、正整数`DINGTALK_AGENT_ID`及平台origin `MOPILOT_PUBLIC_URL`（例如`https://mopilot.example.com`，不含路径/查询/片段），并显式叠加覆盖文件：
 
 ```bash
 docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml config --quiet
 ```
 
-`compose.dingtalk.yaml`启用集成并仅给API增加出站网络；数据库仍只连接`internal: true`的backend网络，数据库和API仍不发布宿主机端口。API需通过HTTPS访问`api.dingtalk.com`、`oapi.dingtalk.com`；企业防火墙限制出站时需允许这两个官方域名。API缺凭证或非法回跳地址会拒绝启动。
+`compose.dingtalk.yaml`启用集成并仅给API增加出站网络；数据库仍只连接`internal: true`的backend网络，数据库和API仍不发布宿主机端口。API需通过HTTPS访问`api.dingtalk.com`、`oapi.dingtalk.com`；企业防火墙限制出站时需允许这两个官方域名。API缺凭证、AgentID、公开平台地址或非法回跳地址会拒绝启动。
 
 启用后，所有影响API创建、更新或升级的Compose命令都应使用上述两个`-f`，避免遗漏覆盖文件。迁移至少到`00011`；使用发布阶段验证的明确版本镜像。个人设置页面由D04接入，目标企业真实授权与通知联调由R04/R05完成后再交付。
+
+后台发送器与API同进程运行，128条内存缓冲、4个工作线程；提交成功后发送，每次尝试前复核绑定及当前任务权限/状态。10秒尝试预算，首次失败后等待5/15/30秒再试，最多四次；受理成功停止，最终失败写结构化本地日志。关闭HTTP后取消重试和在途操作，有限等待5秒后关闭数据库；现有20秒stop_grace_period覆盖退出预算。没有通知数据库、结果查询或补发页面。重启会丢失未完成通知，超时重试可能重复；解绑/停用/转交停止后续尝试，无法撤回已在途请求。
+
+排查用`docker compose --env-file .env -f compose.yaml -f compose.dingtalk.yaml logs --since 1h api`，按event_id/task_id/recipient_id关联`notification failed`、`notification skipped`或`notification abandoned`。`attempts=4`表示四次均未受理，reason只包含受控错误类别；`notification accepted`仅表示钉钉接口受理，不能当作员工已收到。`dispatch_failed`表示内存缓冲满或发送器停止。覆盖文件设置Docker json-file轮转10MiB×3，不输出完整第三方响应、消息或凭证；删除容器前按需要归档诊断日志，日志留存不承担恢复重试的职责。
+
+官方接口和长度规则见[发送工作通知](https://open.dingtalk.com/document/orgapp/asynchronous-sending-of-enterprise-session-messages)及[消息通知类型](https://open.dingtalk.com/document/orgapp/message-types-and-data-format)。相同内容及每日发送限额可能出现接口成功但客户端未收到；首版按已确认范围不查询结果，实际收取仍需R04/R05在目标企业验证。
 
 回跳固定在HTTPS公开入口`/api/v1/integrations/dingtalk/callback`，在钉钉后台登记同一地址。两个Nginx模板为回跳专门关闭access/error日志，并设置`no-referrer`和`no-store`；Go API记录不含query的结果日志。HTTPS模板的80端口收到回跳时，丢弃授权参数并转到固定失败结果，不把授权数据继续放进Location。若另接CDN/WAF/负载均衡，也须为这一条路径排除请求查询日志及第三方响应原文。普通业务和登录日志保持原策略。
 

@@ -8,6 +8,13 @@ services:
       DINGTALK_CLIENT_ID: ${DINGTALK_CLIENT_ID:?DINGTALK_CLIENT_ID is required}
       DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET:?DINGTALK_CLIENT_SECRET is required}
       DINGTALK_REDIRECT_URL: ${DINGTALK_REDIRECT_URL:?DINGTALK_REDIRECT_URL is required}
+      DINGTALK_AGENT_ID: ${DINGTALK_AGENT_ID:?DINGTALK_AGENT_ID is required}
+      MOPILOT_PUBLIC_URL: ${MOPILOT_PUBLIC_URL:?MOPILOT_PUBLIC_URL is required}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - backend
       - dingtalk_egress
