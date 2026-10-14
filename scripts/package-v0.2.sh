@@ -44,7 +44,7 @@ git -C "$DEPLOY_DIR" archive "$DEPLOY_SHA" | tar -x -C "$WORK_DIR/deploy"
 
 build_image() {
   local image="$1" revision="$2" context="$3"
-  PROXY="${HTTP_PROXY:-${http_proxy:-127.0.0.1:7890}}"
+  PROXY="ip:port"
   shift 3
   if docker image inspect "$image" >/dev/null 2>&1; then
     local metadata
