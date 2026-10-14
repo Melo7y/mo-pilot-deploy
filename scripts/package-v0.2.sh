@@ -44,6 +44,7 @@ git -C "$DEPLOY_DIR" archive "$DEPLOY_SHA" | tar -x -C "$WORK_DIR/deploy"
 
 build_image() {
   local image="$1" revision="$2" context="$3"
+  PROXY="${HTTP_PROXY:-${http_proxy:-127.0.0.1:7890}}"
   shift 3
   if docker image inspect "$image" >/dev/null 2>&1; then
     local metadata
@@ -58,6 +59,8 @@ build_image() {
     docker buildx build --platform "$PLATFORM" --load \
       --label "org.opencontainers.image.revision=$revision" \
       --label "org.opencontainers.image.version=$TAG" \
+      --build-arg HTTP_PROXY="$PROXY" \
+      --build-arg HTTPS_PROXY="$PROXY" \
       "$@" -t "$image" "$context"
   fi
 }
