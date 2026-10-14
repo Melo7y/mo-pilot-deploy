@@ -16,7 +16,7 @@ bash mo-pilot-deploy/scripts/package-v0.2.sh linux/amd64
 
 ## 2—5. 停机备份 → 导入 → 迁移启动 → 检查
 
-确认升级包已生成后，复制下面**完整代码块**执行。命令运行于独立 Bash，失败会中止升级并返回登录 shell，避免交互式 set -e 断开 SSH。部署目录、数据目录按现有环境修改；保持原 Compose 项目名。如果原启动命令有 -p 或额外的 -f，把它们原样加到 dc 函数中。
+确认升级包已生成后，复制下面**完整代码块**执行。命令运行于独立 Bash，失败会中止升级并返回登录 shell，避免交互式 set -e 断开 SSH。部署目录按现有环境修改，数据库和附件目录沿用原 .env；保持原 Compose 项目名。如果原启动命令有 -p 或额外的 -f，把它们原样加到 dc 函数中。
 
 ~~~bash
 bash <<'UPGRADE' || echo '升级已中止，请先处理上方错误。'
@@ -24,8 +24,7 @@ set -euo pipefail
 cd /home/melo/code/mo-pilot/mo-pilot-deploy
 TAG=v0.2.0-rc.1
 PACKAGE="../.scratch/v0.2-package/$TAG"
-DATA=/srv/mopilot
-CONFIG_BACKUP="$DATA/backups/config-before-v0.2-$(date +%Y%m%d-%H%M%S)"
+CONFIG_BACKUP="$HOME/mopilot-upgrade-backups/config-before-v0.2-$(date +%Y%m%d-%H%M%S)"
 dc() { docker compose --env-file .env -f compose.yaml "$@"; }
 
 # 四个文件完整并通过校验后，才开始停机。
@@ -39,13 +38,17 @@ done
 
 echo '2. 停机并备份'
 umask 077
-mkdir -m 0700 "$CONFIG_BACKUP"
+mkdir -p -m 0700 "$CONFIG_BACKUP"
 cp -R .env compose*.yaml nginx scripts "$CONFIG_BACKUP/"
 echo "配置备份：$CONFIG_BACKUP"
 dc stop web api backup
 dc run --rm --pull never backup once
-BACKUP="$(find "$DATA/backups" -maxdepth 1 -type d -name 'backup-*' | sort | tail -n 1)"
-(cd "$BACKUP" && sha256sum -c SHA256SUMS)
+dc run --rm --pull never --entrypoint /bin/sh backup -ec '
+  BACKUP="$(find /backups -maxdepth 1 -type d -name "backup-*" | sort | tail -n 1)"
+  test -n "$BACKUP"
+  cd "$BACKUP"
+  sha256sum -c SHA256SUMS
+'
 
 echo '3. 导入前后端镜像，更新部署文件'
 gzip -dc "$PACKAGE/mopilot-images-$TAG.tar.gz" | docker load
@@ -64,6 +67,8 @@ dc run --rm --pull never migrate status
 dc exec -T web nginx -t
 UPGRADE
 ~~~
+
+配置备份保存在当前用户的 ~/mopilot-upgrade-backups/，目录权限为 0700；数据库和附件备份由 backup 容器保存并校验，无需登录用户读写 /srv/mopilot/backups。
 
 原 .env、数据库卷、附件和证书保留。若有自定义 Nginx 配置，升级前将对应修改合入新模板。不要执行 seed、bootstrap-admin 或 down -v。
 
