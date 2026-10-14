@@ -2,70 +2,71 @@
 
 前后端一起更新，数据库从 00008 迁移到 00011。v0.2 验收镜像统一使用 **v0.2.0-rc.1**，包含 UI 修复和新 Logo。
 
-## 1. 本机打包，上传服务器
+## 1. 打包
 
-在本机项目根目录执行：
+在构建机（也可以是测试服务器）的三个仓库父目录执行：
 
 ~~~bash
 bash mo-pilot-deploy/scripts/package-v0.2.sh linux/amd64
 ~~~
 
-服务器若是 ARM，最后一个参数改为 linux/arm64。将生成的 **.scratch/v0.2-package/v0.2.0-rc.1/** 内四个文件上传到服务器 **/tmp/mopilot-v0.2/**。
+服务器若是 ARM，最后一个参数改为 linux/arm64。成功结束会打印 **Package ready: 完整路径**，该目录应有两个 tar.gz、source.txt 和 SHA256SUMS。
 
-## 2. 服务器停机并备份
+同一台服务器打包和升级时，直接用生成目录，无需复制到 /tmp。只有在另一台机器打包时才需要上传四个文件，并将下方 PACKAGE 改为实际上传目录。
 
-以下命令在**同一个 Bash 终端**执行。部署目录、数据目录按现有环境修改；保持原 Compose 项目名。如果原启动命令有 -p 或额外的 -f，把它们原样加到下面的 dc 函数中。
+## 2—5. 停机备份 → 导入 → 迁移启动 → 检查
+
+确认升级包已生成后，复制下面**完整代码块**执行。命令运行于独立 Bash，失败会中止升级并返回登录 shell，避免交互式 set -e 断开 SSH。部署目录、数据目录按现有环境修改；保持原 Compose 项目名。如果原启动命令有 -p 或额外的 -f，把它们原样加到 dc 函数中。
 
 ~~~bash
+bash <<'UPGRADE' || echo '升级已中止，请先处理上方错误。'
 set -euo pipefail
-cd /opt/mopilot/deploy
+cd /home/melo/code/mo-pilot/mo-pilot-deploy
 TAG=v0.2.0-rc.1
-PACKAGE=/tmp/mopilot-v0.2
+PACKAGE="../.scratch/v0.2-package/$TAG"
 DATA=/srv/mopilot
-CONFIG_BACKUP="$DATA/backups/config-before-v0.2"
+CONFIG_BACKUP="$DATA/backups/config-before-v0.2-$(date +%Y%m%d-%H%M%S)"
 dc() { docker compose --env-file .env -f compose.yaml "$@"; }
 
+# 四个文件完整并通过校验后，才开始停机。
+for file in SHA256SUMS source.txt "mopilot-images-$TAG.tar.gz" "mopilot-deploy-$TAG.tar.gz"; do
+  if [ ! -f "$PACKAGE/$file" ]; then
+    echo "缺少升级文件：$PACKAGE/$file；请先完成打包或修正 PACKAGE。" >&2
+    exit 1
+  fi
+done
 (cd "$PACKAGE" && sha256sum -c SHA256SUMS)
+
+echo '2. 停机并备份'
 umask 077
 mkdir -m 0700 "$CONFIG_BACKUP"
 cp -R .env compose*.yaml nginx scripts "$CONFIG_BACKUP/"
+echo "配置备份：$CONFIG_BACKUP"
 dc stop web api backup
 dc run --rm --pull never backup once
 BACKUP="$(find "$DATA/backups" -maxdepth 1 -type d -name 'backup-*' | sort | tail -n 1)"
 (cd "$BACKUP" && sha256sum -c SHA256SUMS)
-~~~
 
-备份或校验失败就停在这里，不继续升级。
-
-## 3. 导入前后端镜像，更新部署文件
-
-~~~bash
+echo '3. 导入前后端镜像，更新部署文件'
 gzip -dc "$PACKAGE/mopilot-images-$TAG.tar.gz" | docker load
 tar -xzf "$PACKAGE/mopilot-deploy-$TAG.tar.gz" -C .
 sed -i "s/^MOPILOT_IMAGE_TAG=.*/MOPILOT_IMAGE_TAG=$TAG/" .env
 grep -qx "MOPILOT_IMAGE_TAG=$TAG" .env
 dc config --quiet
-~~~
 
-原 .env、数据库卷、附件和证书保留。若有自定义 Nginx 配置，升级前将对应修改合入新模板。
-
-## 4. 迁移数据库，启动前后端
-
-~~~bash
+echo '4. 迁移数据库，启动前后端'
 dc run --rm --pull never migrate up
 dc up -d --no-build --pull never --remove-orphans
-~~~
 
-不要执行 seed、bootstrap-admin 或 down -v。
-
-## 5. 检查并验收
-
-~~~bash
+echo '5. 检查'
 dc ps
 dc run --rm --pull never migrate status
 dc exec -T web nginx -t
+UPGRADE
 ~~~
+
+原 .env、数据库卷、附件和证书保留。若有自定义 Nginx 配置，升级前将对应修改合入新模板。不要执行 seed、bootstrap-admin 或 down -v。
 
 确认 API、Web、数据库健康，迁移为 **00011**。浏览器硬刷新后，检查登录、需求/任务、历史附件，以及右上角用户菜单、个人设置和手机排期。
 
-升级失败需要回退时，先停机，按 [恢复步骤](../../README.md#10-恢复)恢复本次数据库和附件备份，并恢复 CONFIG_BACKUP 中的配置。迁移后不能只切回 v0.1 镜像，旧版会重新显示软删除的数据。
+升级失败需要回退时，先停机，按 [恢复步骤](../../README.md#10-恢复)恢复本次数据库和附件备份，并恢复代码块输出的配置备份目录。迁移后不能只切回 v0.1 镜像，旧版会重新显示软删除的数据。
