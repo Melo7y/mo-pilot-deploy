@@ -101,11 +101,11 @@ services:
     restart: unless-stopped
 
   web:
-    image: mopilot-web:${MOPILOT_IMAGE_TAG:-local}
+    image: mopilot-web:${MOPILOT_WEB_IMAGE_TAG:-${MOPILOT_IMAGE_TAG:-local}}
     build:
       context: ${FRONTEND_CONTEXT:-../frontend}
       args:
-        COMMIT_HASH: ${MOPILOT_IMAGE_TAG:-production}
+        COMMIT_HASH: ${MOPILOT_WEB_IMAGE_TAG:-${MOPILOT_IMAGE_TAG:-production}}
     environment:
       MOPILOT_DOMAIN: ${MOPILOT_DOMAIN:?MOPILOT_DOMAIN is required}
       TZ: ${TZ:-Asia/Shanghai}

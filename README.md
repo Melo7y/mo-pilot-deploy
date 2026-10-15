@@ -131,6 +131,8 @@ curl -I http://192.168.1.100:9000/requirements
 
 每次发布使用新的 `MOPILOT_IMAGE_TAG`，不要反复覆盖同一个标签。`.env` 已被 Git 忽略，不得提交，也不要把 `docker compose config` 的完整输出粘贴到工单或聊天中，因为展开结果含数据库密码。
 
+仅更新前端验收时，可用 `MOPILOT_WEB_IMAGE_TAG` 单独指定前端镜像，API 和迁移仍使用 `MOPILOT_IMAGE_TAG`。后续整套版本升级或回滚时，先清空 `MOPILOT_WEB_IMAGE_TAG`，再设置统一版本标签。
+
 创建持久化目录：
 
 ```bash
