@@ -2,32 +2,27 @@
 # Build pinned sources and produce the standard four-file upgrade package.
 set -euo pipefail
 
-if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
-  echo 'Usage: bash scripts/package.sh TAG PLATFORM WEB_SHA API_SHA DEPLOY_SHA MIGRATION [OUTPUT_DIR]' >&2
-  exit 64
-fi
+usage() {
+  echo '常用：bash scripts/package.sh 版本号 [linux/amd64|linux/arm64]'
+  echo '自动获取三个仓库最新 main，识别 Docker 平台和目标迁移，固定提交后打包。'
+  echo '高级：bash scripts/package.sh TAG PLATFORM WEB_SHA API_SHA DEPLOY_SHA MIGRATION [OUTPUT_DIR]'
+}
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then usage; exit 0; fi
+case "$#" in
+  1|2) AUTO_MAIN=1 ;;
+  6|7) AUTO_MAIN=0 ;;
+  *) usage >&2; exit 64 ;;
+esac
 TAG="$1"
-PLATFORM="$2"
-WEB_SHA="$3"
-API_SHA="$4"
-DEPLOY_SHA="$5"
-MIGRATION="$6"
-[[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || exit 64
-for revision in "$WEB_SHA" "$API_SHA" "$DEPLOY_SHA"; do
-  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'Use full commit SHAs.' >&2; exit 64; }
-done
-[[ "$MIGRATION" =~ ^[0-9]+$ ]] || { echo 'Migration must be a version number.' >&2; exit 64; }
-case "${MOPILOT_INCLUDE_POSTGRES:-0}" in
-  0|1) ;;
-  *) echo 'MOPILOT_INCLUDE_POSTGRES must be 0 or 1.' >&2; exit 64 ;;
-esac
-case "$PLATFORM" in
-  linux/amd64|linux/arm64) ;;
-  *) echo "Unsupported platform: $PLATFORM" >&2; exit 64 ;;
-esac
-
+[[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo 'Invalid image tag.' >&2; exit 64; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-DEPLOY_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+if [ -f "$SCRIPT_DIR/../compose.yaml" ]; then
+  DEPLOY_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+else
+  # Allow extracting this script to /tmp without changing the live deployment checkout.
+  DEPLOY_DIR="$(git rev-parse --show-toplevel)"
+  test -f "$DEPLOY_DIR/compose.yaml" || { echo '请在 mo-pilot-deploy 目录执行。' >&2; exit 1; }
+fi
 SOURCE_ROOT="$(cd -- "$DEPLOY_DIR/.." && pwd)"
 OUTPUT_DIR="${7:-$SOURCE_ROOT/.scratch/packages/$TAG}"
 
@@ -44,6 +39,46 @@ if [ -e "$OUTPUT_DIR" ]; then
   echo "Package directory already exists: $OUTPUT_DIR" >&2
   exit 1
 fi
+
+if [ "$AUTO_MAIN" = 1 ]; then
+  PLATFORM="${2:-}"
+  if [ -z "$PLATFORM" ]; then
+    PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
+  fi
+else
+  PLATFORM="$2"
+  WEB_SHA="$3"
+  API_SHA="$4"
+  DEPLOY_SHA="$5"
+  MIGRATION="$6"
+fi
+case "$PLATFORM" in
+  linux/amd64|linux/arm64) ;;
+  *) echo "Unsupported platform: $PLATFORM; specify linux/amd64 or linux/arm64." >&2; exit 64 ;;
+esac
+case "${MOPILOT_INCLUDE_POSTGRES:-0}" in
+  0|1) ;;
+  *) echo 'MOPILOT_INCLUDE_POSTGRES must be 0 or 1.' >&2; exit 64 ;;
+esac
+
+if [ "$AUTO_MAIN" = 1 ]; then
+  echo '获取三个仓库最新 main，并固定本次构建源码'
+  main_commit() {
+    git -C "$1" fetch origin refs/heads/main </dev/null >&2 || return $?
+    git -C "$1" rev-parse --verify 'FETCH_HEAD^{commit}'
+  }
+  WEB_SHA="$(main_commit "$SOURCE_ROOT/frontend")"
+  API_SHA="$(main_commit "$SOURCE_ROOT/backend")"
+  DEPLOY_SHA="$(main_commit "$DEPLOY_DIR")"
+  MIGRATION="$(git -C "$SOURCE_ROOT/backend" ls-tree -r --name-only "$API_SHA" -- migrations |
+    sed -n 's@^migrations/\([0-9][0-9]*\)_.*\.sql$@\1@p' | sort -n | tail -n 1)"
+fi
+for revision in "$WEB_SHA" "$API_SHA" "$DEPLOY_SHA"; do
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'Use full commit SHAs.' >&2; exit 64; }
+done
+[[ "$MIGRATION" =~ ^[0-9]+$ ]] || { echo '未找到有效的目标迁移版本。' >&2; exit 64; }
+printf '版本: %s\n平台: %s\n前端: %s\n后端: %s\n部署: %s\n目标迁移: %s\n' \
+  "$TAG" "$PLATFORM" "$WEB_SHA" "$API_SHA" "$DEPLOY_SHA" "$MIGRATION"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$WORK_DIR"' EXIT
@@ -81,8 +116,6 @@ if [ "${MOPILOT_INCLUDE_POSTGRES:-0}" = 1 ]; then
   docker pull --platform "$PLATFORM" postgres:17-alpine
   IMAGES+=(postgres:17-alpine)
 fi
-mkdir -p "$WORK_DIR/deploy/docs/upgrades"
-cp -R "$DEPLOY_DIR/docs/upgrades/." "$WORK_DIR/deploy/docs/upgrades/"
 docker save "${IMAGES[@]}" \
   | gzip -1 > "$WORK_DIR/package/mopilot-images-$TAG.tar.gz"
 tar -czf "$WORK_DIR/package/mopilot-deploy-$TAG.tar.gz" -C "$WORK_DIR/deploy" .

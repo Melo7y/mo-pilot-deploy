@@ -4,7 +4,7 @@
 
 三个仓库采用 `main` + 短期功能分支 + 统一版本标签，详见[分支与发布约定](CONTRIBUTING.md)。
 
-已有部署统一按 [升级与回退流程](docs/upgrades/README.md) 操作；[v0.1 → v0.2 参数](docs/upgrades/ui-acceptance-20261014.md)与[本次前端补丁参数](docs/upgrades/ui-patch-20261015.md)分别记录版本差异。
+已有部署统一按 [升级与回退流程](docs/upgrades/README.md) 操作；本次正式发布见 [v0.1 → v0.2.0 版本说明](docs/upgrades/v0.2.0.md)。
 
 部署拓扑如下：
 
@@ -133,7 +133,7 @@ curl -I http://192.168.1.100:9000/requirements
 
 仅更新前端验收时，可用 `MOPILOT_WEB_IMAGE_TAG` 单独指定前端镜像，API 和迁移仍使用 `MOPILOT_IMAGE_TAG`。后续整套版本升级或回滚时，先清空 `MOPILOT_WEB_IMAGE_TAG`，再设置统一版本标签。
 
-已部署 v0.2.0-rc.1 的环境更新甘特图和需求人列，见[前端更新简要步骤](docs/upgrades/ui-patch-20261015.md)。
+v0.2.0 正式版已包含甘特图优化和需求人列，按[正式版升级说明](docs/upgrades/v0.2.0.md)统一更新前后端。
 
 创建持久化目录：
 
@@ -158,13 +158,13 @@ API 镜像以 UID/GID `10001:10001` 运行，因此附件目录必须允许该�
 
 ### 在构建机制作发布包
 
-先确认服务器架构：`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。在同级含有 `frontend/`、`backend/` 的部署仓库中，使用版本说明提供的固定提交打包：
+先确认服务器架构：`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。在同级含有 `frontend/`、`backend/` 的部署仓库中，只需填写版本号：
 
 ```bash
-bash scripts/package.sh 镜像标签 linux/amd64 前端完整SHA 后端完整SHA 部署完整SHA 目标迁移版本
+bash scripts/package.sh v0.2.0
 ```
 
-脚本从三个 commit 归档源码，构建对应平台镜像，输出 `Package ready: 实际目录`。默认目录是三个仓库父目录下的 `.scratch/packages/镜像标签/`，含四个文件：
+脚本自动获取三个仓库最新远程 `main`、检测当前 Docker 平台、从后端源码读取迁移号，然后固定 commit 归档构建。跨机器构建才需追加目标平台，例如 `bash scripts/package.sh v0.2.0 linux/amd64`。输出 `Package ready: 实际目录`。默认目录是三个仓库父目录下的 `.scratch/packages/镜像标签/`，含四个文件：
 
 ```text
 mopilot-images-<版本>.tar.gz
@@ -173,7 +173,7 @@ source.txt
 SHA256SUMS
 ```
 
-`source.txt` 记录版本、平台、源码与目标迁移；已有输出目录不会覆盖，同名镜像只有来源、平台、版本一致才复用。部署包来自固定提交，不含生产 `.env`，另附当前升级文档。构建代理使用环境变量 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，不写入 Dockerfile。
+`source.txt` 记录版本、平台、源码与目标迁移；已有输出目录不会覆盖，同名镜像只有来源、平台、版本一致才复用。部署包及升级文档均来自本次固定的部署提交，不含生产 `.env`。构建代理使用环境变量 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，不写入 Dockerfile。
 
 已有环境升级默认只打包前后端，沿用服务器的 PostgreSQL。**首次离线安装**需要将 `MOPILOT_INCLUDE_POSTGRES=1` 放在打包命令前，额外包含 `postgres:17-alpine`；这会拉取指定平台镜像。向服务器传输完整的四文件目录，并保留已验证产物。
 

@@ -18,6 +18,9 @@ class PackageTest(UpgradeFixture):
         self.backend = self.base / "backend"
         self.backend.mkdir()
         (self.backend / "Dockerfile").write_text("FROM scratch\n")
+        (self.backend / "migrations").mkdir()
+        (self.backend / "migrations/00009_first.sql").write_text("-- first migration")
+        (self.backend / "migrations/00011_latest.sql").write_text("-- latest migration")
         self.api_sha = self.commit(self.backend)
         self.deploy_sha = self.commit(self.work)
         self.output = self.base / "package"
@@ -28,6 +31,7 @@ base = pathlib.Path(os.environ['CASE_DIR'])
 with (base/'calls').open('a') as f: f.write(json.dumps(args)+'\\n')
 state = base/'images.json'
 images = json.loads(state.read_text()) if state.exists() else {}
+if args[0] == 'version': print('linux/amd64'); sys.exit(0)
 if args[:2] == ['image', 'inspect']:
     name = args[-1]
     if name not in images: sys.exit(1)
@@ -47,6 +51,66 @@ if args[0] == 'pull':
 raise AssertionError(args)
 ''')
         self.bin.joinpath("docker").chmod(0o755)
+
+    def remotes(self):
+        # Real local Git remotes exercise fetch and FETCH_HEAD without internet access.
+        (self.bin / "git").write_text('''#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+if 'fetch' in args and os.environ.get('FAIL_FETCH'): sys.exit(12)
+os.execv(os.environ['REAL_GIT'], ['git'] + args)
+''')
+        for repo in (self.frontend, self.backend, self.work):
+            remote = self.base / (repo.name + "-remote.git")
+            subprocess.run([self.git, "init", "--bare", "-q", str(remote)], check=True)
+            subprocess.run([self.git, "-C", str(repo), "remote", "add", "origin", str(remote)], check=True)
+            subprocess.run([self.git, "-C", str(repo), "push", "-q", "origin", "HEAD:main"], check=True)
+
+    def auto_package(self, *args, script=None, **env):
+        return subprocess.run(["bash", str(script or self.work / "scripts/package.sh"), TAG, *args],
+                              cwd=self.work, env=dict(self.env, **env), capture_output=True, text=True, errors="replace")
+
+    def test_automatic_main_uses_remote_commits_and_detects_migration(self):
+        self.remotes()
+        local_sha = self.commit(self.frontend)
+        self.assertNotEqual(local_sha, self.sha)
+        (self.work / "docs/upgrades/README.md").write_text("local edits must not ship")
+        result = self.auto_package()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.base / ".scratch/packages" / TAG
+        source = (output / "source.txt").read_text()
+        for expected in ("frontend_commit=" + self.sha, "backend_commit=" + self.api_sha,
+                         "deploy_runtime_commit=" + self.deploy_sha, "required_migration=00011", "platform=linux/amd64"):
+            self.assertIn(expected, source)
+        with tarfile.open(output / f"mopilot-deploy-{TAG}.tar.gz") as archive:
+            content = archive.extractfile("./docs/upgrades/README.md").read()
+            self.assertNotIn(b"local edits must not ship", content)
+
+    def test_extracted_script_and_explicit_target_platform(self):
+        self.remotes()
+        runner = self.base / "runner"
+        runner.mkdir()
+        shutil.copy(ROOT / "scripts/package.sh", runner / "package.sh")
+        result = self.auto_package("linux/arm64", script=runner / "package.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("platform=linux/arm64", (self.base / ".scratch/packages" / TAG / "source.txt").read_text())
+        self.assertFalse(any(c[0] == "version" for c in self.calls()))
+
+    def test_failed_fetch_never_reuses_stale_fetch_head(self):
+        self.remotes()
+        for repo in (self.frontend, self.backend, self.work):
+            subprocess.run([self.git, "-C", str(repo), "fetch", "-q", "origin", "main"], check=True)
+        result = self.auto_package(FAIL_FETCH="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["buildx", "build"] for c in self.calls()))
+
+    def test_automatic_mode_refuses_missing_migrations(self):
+        shutil.rmtree(self.backend / "migrations")
+        self.api_sha = self.commit(self.backend)
+        self.remotes()
+        result = self.auto_package()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["buildx", "build"] for c in self.calls()))
 
     def commit(self, path):
         subprocess.run([self.git, "init", "-q", str(path)], check=True)
