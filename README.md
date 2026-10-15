@@ -133,6 +133,8 @@ curl -I http://192.168.1.100:9000/requirements
 
 仅更新前端验收时，可用 `MOPILOT_WEB_IMAGE_TAG` 单独指定前端镜像，API 和迁移仍使用 `MOPILOT_IMAGE_TAG`。后续整套版本升级或回滚时，先清空 `MOPILOT_WEB_IMAGE_TAG`，再设置统一版本标签。
 
+已部署 v0.2.0-rc.1 的环境更新甘特图和需求人列，见[前端更新简要步骤](docs/upgrades/ui-patch-20261015.md)。
+
 创建持久化目录：
 
 ```bash
