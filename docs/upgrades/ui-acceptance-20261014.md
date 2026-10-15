@@ -25,7 +25,8 @@ cd /home/melo/code/mo-pilot/mo-pilot-deploy
 TAG=v0.2.0-rc.1
 PACKAGE="../.scratch/v0.2-package/$TAG"
 CONFIG_BACKUP="$HOME/mopilot-upgrade-backups/config-before-v0.2-$(date +%Y%m%d-%H%M%S)"
-dc() { docker compose --env-file .env -f compose.yaml "$@"; }
+# 关闭 Compose 的 stdin，避免 run 吞掉 here-document 中后续升级命令。
+dc() { docker compose --env-file .env -f compose.yaml "$@" </dev/null; }
 
 # 四个文件完整并通过校验后，才开始停机。
 for file in SHA256SUMS source.txt "mopilot-images-$TAG.tar.gz" "mopilot-deploy-$TAG.tar.gz"; do
@@ -42,8 +43,8 @@ mkdir -p -m 0700 "$CONFIG_BACKUP"
 cp -R .env compose*.yaml nginx scripts "$CONFIG_BACKUP/"
 echo "配置备份：$CONFIG_BACKUP"
 dc stop web api backup
-dc run --rm --pull never backup once
-dc run --rm --pull never --entrypoint /bin/sh backup -ec '
+dc run --rm -T --pull never backup once
+dc run --rm -T --pull never --entrypoint /bin/sh backup -ec '
   BACKUP="$(find /backups -maxdepth 1 -type d -name "backup-*" | sort | tail -n 1)"
   test -n "$BACKUP"
   cd "$BACKUP"
@@ -58,17 +59,19 @@ grep -qx "MOPILOT_IMAGE_TAG=$TAG" .env
 dc config --quiet
 
 echo '4. 迁移数据库，启动前后端'
-dc run --rm --pull never migrate up
+dc run --rm -T --pull never migrate up
 dc up -d --no-build --pull never --remove-orphans
 
 echo '5. 检查'
 dc ps
-dc run --rm --pull never migrate status
+dc run --rm -T --pull never migrate status
 dc exec -T web nginx -t
 UPGRADE
 ~~~
 
 配置备份保存在当前用户的 ~/mopilot-upgrade-backups/，目录权限为 0700；数据库和附件备份由 backup 容器保存并校验，无需登录用户读写 /srv/mopilot/backups。
+
+输出会依次出现第 2、3、4、5 步。只有 backup ready 表示备份完成，升级仍需继续到第 5 步。若旧版命令在此处直接返回提示符，应使用上述关闭 stdin 的 dc 定义，校验已经生成的备份后从第 3 步继续。
 
 原 .env、数据库卷、附件和证书保留。若有自定义 Nginx 配置，升级前将对应修改合入新模板。不要执行 seed、bootstrap-admin 或 down -v。
 
