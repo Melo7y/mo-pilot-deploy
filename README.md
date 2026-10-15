@@ -4,7 +4,7 @@
 
 三个仓库采用 `main` + 短期功能分支 + 统一版本标签，详见[分支与发布约定](CONTRIBUTING.md)。
 
-从 v0.1 升级到 v0.2：按 [五步停机升级](docs/upgrades/ui-acceptance-20261014.md)同时更新前后端，本机镜像打包只需一条命令。
+已有部署统一按 [升级与回退流程](docs/upgrades/README.md) 操作；[v0.1 → v0.2 参数](docs/upgrades/ui-acceptance-20261014.md)与[本次前端补丁参数](docs/upgrades/ui-patch-20261015.md)分别记录版本差异。
 
 部署拓扑如下：
 
@@ -158,76 +158,26 @@ API 镜像以 UID/GID `10001:10001` 运行，因此附件目录必须允许该�
 
 ### 在构建机制作发布包
 
-先在公网服务器执行 `uname -m` 确认架构。`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。在同时包含 `backend/`、`frontend/` 和 `deploy/` 的构建机上进入部署目录，设置本次唯一的镜像标签和目标平台：
+先确认服务器架构：`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。在同级含有 `frontend/`、`backend/` 的部署仓库中，使用版本说明提供的固定提交打包：
 
 ```bash
-cd /opt/mopilot/deploy
-TAG=20260920-1
-PLATFORM=linux/amd64
+bash scripts/package.sh 镜像标签 linux/amd64 前端完整SHA 后端完整SHA 部署完整SHA 目标迁移版本
 ```
 
-构建与服务器平台一致的镜像：
-
-```bash
-docker buildx build \
-  --platform "$PLATFORM" \
-  --add-host=host.docker.internal:host-gateway \
-  --load \
-  --build-arg "HTTP_PROXY=http://host.docker.internal:7890" \
-  --build-arg "HTTPS_PROXY=http://host.docker.internal:7890" \
-  --build-arg "NO_PROXY=localhost,127.0.0.1" \
-  -t "mopilot-api:$TAG" \
-  ../mo-pilot-backend
-
-docker buildx build \
-  --platform "$PLATFORM" \
-  --add-host=host.docker.internal:host-gateway \
-  --build-arg "COMMIT_HASH=$TAG" \
-  --build-arg "HTTP_PROXY=http://host.docker.internal:7890" \
-  --build-arg "HTTPS_PROXY=http://host.docker.internal:7890" \
-  --build-arg "NO_PROXY=localhost,127.0.0.1" \
-  --load \
-  -t "mopilot-web:$TAG" \
-  ../mo-pilot-frontend
-
-docker pull --platform "$PLATFORM" postgres:17-alpine
-```
-
-构建机需要本机代理时，可以增加 `--network=host`，并通过 `--build-arg HTTP_PROXY=...`、`--build-arg HTTPS_PROXY=...` 传入代理；不要把构建机代理地址写入 Dockerfile。
-
-导出三个运行时镜像：
-
-```bash
-docker save \
-  "mopilot-api:$TAG" \
-  "mopilot-web:$TAG" \
-  postgres:17-alpine \
-  | gzip -1 > "../mopilot-images-$TAG.tar.gz"
-```
-
-部署目录只打包运行所需文件，不包含生产 `.env`：
-
-```bash
-tar \
-  --exclude='.git' \
-  --exclude='.env' \
-  -czf "../mopilot-deploy-$TAG.tar.gz" \
-  .
-
-cd ..
-sha256sum \
-  "mopilot-images-$TAG.tar.gz" \
-  "mopilot-deploy-$TAG.tar.gz" \
-  > "SHA256SUMS-$TAG"
-```
-
-向公网服务器传输以下三个文件：
+脚本从三个 commit 归档源码，构建对应平台镜像，输出 `Package ready: 实际目录`。默认目录是三个仓库父目录下的 `.scratch/packages/镜像标签/`，含四个文件：
 
 ```text
 mopilot-images-<版本>.tar.gz
 mopilot-deploy-<版本>.tar.gz
-SHA256SUMS-<版本>
+source.txt
+SHA256SUMS
 ```
+
+`source.txt` 记录版本、平台、源码与目标迁移；已有输出目录不会覆盖，同名镜像只有来源、平台、版本一致才复用。部署包来自固定提交，不含生产 `.env`，另附当前升级文档。构建代理使用环境变量 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`，不写入 Dockerfile。
+
+已有环境升级默认只打包前后端，沿用服务器的 PostgreSQL。**首次离线安装**需要将 `MOPILOT_INCLUDE_POSTGRES=1` 放在打包命令前，额外包含 `postgres:17-alpine`；这会拉取指定平台镜像。向服务器传输完整的四文件目录，并保留已验证产物。
+
+已有部署的升级使用[统一流程 B](docs/upgrades/README.md#b-前后端整套升级)。以下初始化步骤只用于首次部署。
 
 ### 在公网服务器导入并部署
 
@@ -241,7 +191,7 @@ docker info --format '{{.DockerRootDir}}'
 
 ```bash
 TAG=20260920-1
-sha256sum -c "SHA256SUMS-$TAG"
+sha256sum -c SHA256SUMS
 
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /opt/mopilot/deploy
 tar -xzf "mopilot-deploy-$TAG.tar.gz" -C /opt/mopilot/deploy
@@ -536,47 +486,12 @@ task ps
 
 ## 11. 升级与回滚
 
-升级前：
+统一入口：[升级与回退操作流程](docs/upgrades/README.md)。按版本说明选择仅前端更新或前后端整套升级，复用同一流程；不要把拉取最新 main 当作发布版本。
 
-1. 执行 `task backup` 并校验 `SHA256SUMS`。
-2. 记录三个代码仓库的 commit、当前 `MOPILOT_IMAGE_TAG` 和数据库迁移状态。
-3. 拉取经过测试的明确版本，不直接部署未固定的分支最新提交。
-4. 在 `.env` 中设置新的唯一镜像标签。
-
-执行升级：
-
-```bash
-task config
-task build
-task migrate
-task up
-task ps
-```
-
-离线镜像部署不在公网服务器执行 `task build`。应在构建机按第 4 节生成并传输新版本镜像包，在服务器校验后执行：
-
-```bash
-TAG=新版本标签
-gzip -dc "mopilot-images-$TAG.tar.gz" | docker load
-# 将 .env 中的 MOPILOT_IMAGE_TAG 修改为同一个新版本标签
-docker compose --env-file .env -f compose.yaml \
-  run --rm --pull never backup once
-docker compose --env-file .env -f compose.yaml \
-  run --rm --pull never migrate up
-docker compose --env-file .env -f compose.yaml \
-  up -d --no-build --pull never --remove-orphans
-docker compose --env-file .env -f compose.yaml ps
-```
-
-升级后完成登录、列表、详情、附件上传下载和关键流程冒烟测试，并观察 API/Nginx 日志。
-
-应用回滚时，把 `.env` 的 `MOPILOT_IMAGE_TAG` 改回仍保留在本机的旧标签，再执行：
-
-```bash
-docker compose --env-file .env -f compose.yaml up -d --no-build api web
-```
-
-只有确认数据库迁移向后兼容时才能只回滚应用。涉及不兼容 schema 或数据变化时，应进入维护窗口并按上一节恢复升级前备份，不要盲目执行 `migrate down`。
+- 仅前端更新：`bash scripts/update-web.sh 镜像标签 完整前端SHA`，先构建、备份配置，再替换 web。
+- 整套升级：校验四文件包、备份配置与数据、迁移启动、验收；清空前端独立标签，使用统一版本。
+- 新版本说明使用[模板](docs/upgrades/version-template.md)，只记录参数、兼容性、特殊步骤与验收结果。
+- 数据恢复沿用[第 10 节](#10-恢复)；只有数据库兼容旧应用时才可直接回退镜像。
 
 ## 12. 日常运维
 

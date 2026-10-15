@@ -54,3 +54,5 @@ git switch -c hotfix/0.1.1 v0.1.0
 只有在一个版本验收期间还需要开发下个版本时，才从候选提交创建 `release/0.2`。该分支只接收本次发布修复，`main` 继续后续功能；修复必须同步回 `main`。验收通过后在发布分支打标签，不把包含后续功能的 `main` 合入发布分支。发布结束且修复全部同步后，无持续维护需求即可删除该分支。
 
 升级前备份数据库与附件。只有数据库兼容旧应用时才能直接回滚镜像；不兼容迁移按部署 README 的恢复流程处理。
+
+升级操作集中维护在 [统一升级流程](docs/upgrades/README.md)。新版本使用[版本说明模板](docs/upgrades/version-template.md)，填写参数、兼容性与特殊操作；通用修复回收到统一流程、`scripts/update-web.sh` 和 `scripts/package.sh`，不再复制日期脚本或整套升级命令。修改后运行 `python3 -m unittest discover -s tests -v` 并按目标版本验证真实构建与部署。
