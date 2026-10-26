@@ -5,12 +5,13 @@ set -euo pipefail
 usage() {
   echo '常用：bash scripts/package.sh 版本号 [linux/amd64|linux/arm64]'
   echo '自动获取三个仓库最新 main，识别 Docker 平台和目标迁移，固定提交后打包。'
+  echo '测试分支：MOPILOT_SOURCE_REF=feat/分支名（须在三个远程仓库中存在）。'
   echo '高级：bash scripts/package.sh TAG PLATFORM WEB_SHA API_SHA DEPLOY_SHA MIGRATION [OUTPUT_DIR]'
 }
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then usage; exit 0; fi
 case "$#" in
-  1|2) AUTO_MAIN=1 ;;
-  6|7) AUTO_MAIN=0 ;;
+  1|2) AUTO_SOURCE=1 ;;
+  6|7) AUTO_SOURCE=0 ;;
   *) usage >&2; exit 64 ;;
 esac
 TAG="$1"
@@ -40,7 +41,9 @@ if [ -e "$OUTPUT_DIR" ]; then
   exit 1
 fi
 
-if [ "$AUTO_MAIN" = 1 ]; then
+if [ "$AUTO_SOURCE" = 1 ]; then
+  SOURCE_REF="${MOPILOT_SOURCE_REF:-main}"
+  git check-ref-format "refs/heads/$SOURCE_REF" >/dev/null || { echo '源分支名格式不正确。' >&2; exit 64; }
   PLATFORM="${2:-}"
   if [ -z "$PLATFORM" ]; then
     PLATFORM="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
@@ -61,15 +64,15 @@ case "${MOPILOT_INCLUDE_POSTGRES:-0}" in
   *) echo 'MOPILOT_INCLUDE_POSTGRES must be 0 or 1.' >&2; exit 64 ;;
 esac
 
-if [ "$AUTO_MAIN" = 1 ]; then
-  echo '获取三个仓库最新 main，并固定本次构建源码'
-  main_commit() {
-    git -C "$1" fetch origin refs/heads/main </dev/null >&2 || return $?
+if [ "$AUTO_SOURCE" = 1 ]; then
+  echo "获取三个仓库远程 ${SOURCE_REF}，并固定本次构建源码"
+  source_commit() {
+    git -C "$1" fetch origin "refs/heads/$SOURCE_REF" </dev/null >&2 || return $?
     git -C "$1" rev-parse --verify 'FETCH_HEAD^{commit}'
   }
-  WEB_SHA="$(main_commit "$SOURCE_ROOT/frontend")"
-  API_SHA="$(main_commit "$SOURCE_ROOT/backend")"
-  DEPLOY_SHA="$(main_commit "$DEPLOY_DIR")"
+  WEB_SHA="$(source_commit "$SOURCE_ROOT/frontend")"
+  API_SHA="$(source_commit "$SOURCE_ROOT/backend")"
+  DEPLOY_SHA="$(source_commit "$DEPLOY_DIR")"
   MIGRATION="$(git -C "$SOURCE_ROOT/backend" ls-tree -r --name-only "$API_SHA" -- migrations |
     sed -n 's@^migrations/\([0-9][0-9]*\)_.*\.sql$@\1@p' | sort -n | tail -n 1)"
 fi

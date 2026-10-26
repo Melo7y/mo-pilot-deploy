@@ -96,6 +96,34 @@ os.execv(os.environ['REAL_GIT'], ['git'] + args)
         self.assertIn("platform=linux/arm64", (self.base / ".scratch/packages" / TAG / "source.txt").read_text())
         self.assertFalse(any(c[0] == "version" for c in self.calls()))
 
+    def test_candidate_branch_uses_remote_sources_in_all_repositories(self):
+        self.remotes()
+        branch = "feat/requirement-collaboration"
+        (self.frontend / "index.html").write_text("committed source")
+        (self.backend / "migrations/00013_candidate.sql").write_text("-- candidate")
+        candidates = []
+        for repo in (self.frontend, self.backend, self.work):
+            (repo / "candidate.txt").write_text("candidate-only change")
+            candidates.append(self.commit(repo))
+            subprocess.run([self.git, "-C", str(repo), "push", "-q", "origin", "HEAD:" + branch], check=True)
+        result = self.auto_package(MOPILOT_SOURCE_REF=branch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = (self.base / ".scratch/packages" / TAG / "source.txt").read_text()
+        for key, sha in zip(("frontend_commit", "backend_commit", "deploy_runtime_commit"), candidates):
+            self.assertIn(key + "=" + sha, source)
+        self.assertIn("required_migration=00013", source)
+
+    def test_missing_candidate_branch_does_not_fall_back_to_main(self):
+        self.remotes()
+        result = self.auto_package(MOPILOT_SOURCE_REF="feat/missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["buildx", "build"] for c in self.calls()))
+
+    def test_invalid_candidate_branch_is_rejected(self):
+        result = self.auto_package(MOPILOT_SOURCE_REF="../main")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[:2] == ["buildx", "build"] for c in self.calls()))
+
     def test_failed_fetch_never_reuses_stale_fetch_head(self):
         self.remotes()
         for repo in (self.frontend, self.backend, self.work):
